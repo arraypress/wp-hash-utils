@@ -2,9 +2,8 @@
 /**
  * Hash Utilities
  *
- * This class provides essential hashing utilities for passwords, data integrity,
- * file verification, and WordPress security. Focuses on practical, frequently-used
- * operations with robust error handling and security best practices.
+ * Provides hashing utilities for data integrity, verification, and security.
+ * Requires WordPress environment.
  *
  * @package ArrayPress\HashUtils
  * @since   1.0.0
@@ -19,54 +18,44 @@ namespace ArrayPress\HashUtils;
 class Hash {
 
 	/**
-	 * Hash a password using WordPress's secure hashing.
+	 * Get WordPress salt for hashing.
 	 *
-	 * @param string $password Password to hash.
-	 *
-	 * @return string Hashed password.
+	 * @return string Combined WordPress salts.
 	 */
-	public static function password( string $password ): string {
-		return wp_hash_password( $password );
-	}
-
-	/**
-	 * Verify a password against its hash.
-	 *
-	 * @param string $password Plain text password.
-	 * @param string $hash     Hashed password to verify against.
-	 *
-	 * @return bool True if password matches hash, false otherwise.
-	 */
-	public static function verify( string $password, string $hash ): bool {
-		return wp_check_password( $password, $hash );
+	public static function get_salt(): string {
+		return wp_salt() . wp_salt( 'secure_auth' ) . wp_salt( 'logged_in' ) . wp_salt( 'nonce' );
 	}
 
 	/**
 	 * Hash data using specified algorithm.
 	 *
 	 * @param mixed  $data Data to hash (will be serialized if not string).
-	 * @param string $algo Hashing algorithm (default: 'sha256').
+	 * @param string $algo Hashing algorithm.
+	 * @param string $salt Optional custom salt. Uses WordPress salt if empty.
 	 *
 	 * @return string|null Hash string or null if algorithm not supported.
 	 */
-	public static function data( mixed $data, string $algo = 'sha256' ): ?string {
+	public static function data( $data, string $algo = 'sha256', string $salt = '' ): ?string {
 		if ( ! in_array( $algo, hash_algos(), true ) ) {
 			return null;
 		}
 
-		// Convert data to string if needed
 		if ( ! is_string( $data ) ) {
 			$data = maybe_serialize( $data );
 		}
 
-		return hash( $algo, $data );
+		if ( empty( $salt ) ) {
+			$salt = self::get_salt();
+		}
+
+		return hash( $algo, $data . $salt );
 	}
 
 	/**
 	 * Hash file contents.
 	 *
 	 * @param string $file_path Path to file.
-	 * @param string $algo      Hashing algorithm (default: 'sha256').
+	 * @param string $algo      Hashing algorithm.
 	 *
 	 * @return string|null File hash or null on failure.
 	 */
@@ -82,6 +71,92 @@ class Hash {
 		$hash = hash_file( $algo, $file_path );
 
 		return $hash !== false ? $hash : null;
+	}
+
+	/**
+	 * Hash WordPress attachment file.
+	 *
+	 * @param int    $attachment_id WordPress attachment ID.
+	 * @param string $algo          Hashing algorithm.
+	 *
+	 * @return string|null Attachment file hash or null on failure.
+	 */
+	public static function attachment( int $attachment_id, string $algo = 'sha256' ): ?string {
+		$file_path = get_attached_file( $attachment_id );
+
+		if ( ! $file_path ) {
+			return null;
+		}
+
+		return self::file( $file_path, $algo );
+	}
+
+	/**
+	 * Generate HMAC (Hash-based Message Authentication Code).
+	 *
+	 * @param mixed  $data Data to authenticate.
+	 * @param string $key  Secret key. Uses WordPress salt if empty.
+	 * @param string $algo Hashing algorithm.
+	 *
+	 * @return string|null HMAC string or null if algorithm not supported.
+	 */
+	public static function hmac( $data, string $key = '', string $algo = 'sha256' ): ?string {
+		if ( ! in_array( $algo, hash_hmac_algos(), true ) ) {
+			return null;
+		}
+
+		if ( ! is_string( $data ) ) {
+			$data = maybe_serialize( $data );
+		}
+
+		if ( empty( $key ) ) {
+			$key = self::get_salt();
+		}
+
+		return hash_hmac( $algo, $data, $key );
+	}
+
+	/**
+	 * Verify HMAC authentication.
+	 *
+	 * @param mixed  $data     Original data.
+	 * @param string $expected Expected HMAC value.
+	 * @param string $key      Secret key. Uses WordPress salt if empty.
+	 * @param string $algo     Hashing algorithm.
+	 *
+	 * @return bool True if HMAC is valid.
+	 */
+	public static function verify_hmac( $data, string $expected, string $key = '', string $algo = 'sha256' ): bool {
+		$calculated = self::hmac( $data, $key, $algo );
+
+		if ( $calculated === null ) {
+			return false;
+		}
+
+		return hash_equals( $expected, $calculated );
+	}
+
+	/**
+	 * Hash a password securely.
+	 *
+	 * @param string $password Password to hash.
+	 *
+	 * @return string Hashed password.
+	 */
+	public static function password( string $password ): string {
+		return wp_hash_password( $password );
+	}
+
+	/**
+	 * Verify a password against its hash.
+	 *
+	 * @param string $password Plain text password.
+	 * @param string $hash     Hashed password.
+	 *
+	 * @return bool True if password matches.
+	 */
+	public static function verify_password( string $password, string $hash ): bool {
+		return wp_check_password( $password, $hash );
 	}
 
 	/**
@@ -101,108 +176,30 @@ class Hash {
 	 * @param string $nonce  Nonce to verify.
 	 * @param string $action Action the nonce was created for.
 	 *
-	 * @return bool True if nonce is valid, false otherwise.
+	 * @return bool True if nonce is valid.
 	 */
-	public static function check_nonce( string $nonce, string $action ): bool {
+	public static function verify_nonce( string $nonce, string $action ): bool {
 		$result = wp_verify_nonce( $nonce, $action );
 
 		return $result !== false && $result !== 0;
 	}
 
 	/**
-	 * Generate HMAC (Hash-based Message Authentication Code).
+	 * Generate cache key from data.
 	 *
-	 * @param mixed  $data Data to authenticate.
-	 * @param string $key  Secret key for HMAC.
-	 * @param string $algo Hashing algorithm (default: 'sha256').
+	 * @param mixed  $data   Data to generate cache key for.
+	 * @param string $prefix Optional prefix.
 	 *
-	 * @return string|null HMAC string or null if algorithm not supported.
+	 * @return string Cache key.
 	 */
-	public static function hmac( mixed $data, string $key, string $algo = 'sha256' ): ?string {
-		if ( ! in_array( $algo, hash_hmac_algos(), true ) ) {
-			return null;
-		}
-
-		// Convert data to string if needed
+	public static function cache_key( $data, string $prefix = '' ): string {
 		if ( ! is_string( $data ) ) {
 			$data = maybe_serialize( $data );
 		}
 
-		return hash_hmac( $algo, $data, $key );
-	}
+		$hash = md5( $data );
 
-	/**
-	 * Verify HMAC authentication.
-	 *
-	 * @param mixed  $data     Original data.
-	 * @param string $key      Secret key used for HMAC.
-	 * @param string $expected Expected HMAC value.
-	 * @param string $algo     Hashing algorithm (default: 'sha256').
-	 *
-	 * @return bool True if HMAC is valid, false otherwise.
-	 */
-	public static function verify_hmac( mixed $data, string $key, string $expected, string $algo = 'sha256' ): bool {
-		$calculated = self::hmac( $data, $key, $algo );
-
-		if ( $calculated === null ) {
-			return false;
-		}
-
-		// Use hash_equals for timing-safe comparison
-		return hash_equals( $expected, $calculated );
-	}
-
-	/**
-	 * Generate cache key from data.
-	 *
-	 * @param mixed  $data   Data to generate cache key for.
-	 * @param string $prefix Optional prefix for cache key.
-	 *
-	 * @return string Cache key.
-	 */
-	public static function cache_key( mixed $data, string $prefix = '' ): string {
-		$hash = self::data( $data, 'md5' );
-
-		return $prefix ? $prefix . '_' . $hash : $hash;
-	}
-
-	/**
-	 * Hash WordPress attachment file.
-	 *
-	 * @param int    $attachment_id WordPress attachment ID.
-	 * @param string $algo          Hashing algorithm (default: 'sha256').
-	 *
-	 * @return string|null Attachment file hash or null on failure.
-	 */
-	public static function attachment( int $attachment_id, string $algo = 'sha256' ): ?string {
-		$file_path = get_attached_file( $attachment_id );
-
-		if ( ! $file_path ) {
-			return null;
-		}
-
-		return self::file( $file_path, $algo );
-	}
-
-	/**
-	 * Generate multiple hashes for the same data.
-	 *
-	 * @param mixed $data  Data to hash.
-	 * @param array $algos Array of algorithms to use (default: ['md5', 'sha1', 'sha256']).
-	 *
-	 * @return array Associative array of algorithm => hash pairs.
-	 */
-	public static function multi( mixed $data, array $algos = [ 'md5', 'sha1', 'sha256' ] ): array {
-		$hashes = [];
-
-		foreach ( $algos as $algo ) {
-			$hash = self::data( $data, $algo );
-			if ( $hash !== null ) {
-				$hashes[ $algo ] = $hash;
-			}
-		}
-
-		return $hashes;
+		return $prefix !== '' ? $prefix . '_' . $hash : $hash;
 	}
 
 }
